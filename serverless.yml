@@ -1,0 +1,147 @@
+# ms-usuarios: tenants, periodos académicos (ACA-01) y perfiles (ACA-02).
+# Contrato: nubeduca-contratos/apis/ms-usuarios.openapi.yaml · source de eventos: lms.users
+#
+# Parámetros (serverless deploy --stage dev --param="outbox=pipe"):
+#   busName   bus de EventBridge. Si no se pasa, se lee del SSM /nubeduca/<stage>/bus-name
+#             (lms-<stage>, de infra/base); si no existe, usa 'lms'.
+#   outbox    lambda (por defecto) | pipe. Cómo viaja el outbox del Stream al bus.
+#   authMode  mock (por defecto, hasta AUTH-01) | cognito.
+#
+# Sin `org:` fija: Serverless v4 toma la org de SERVERLESS_ACCESS_KEY (o de `serverless login`),
+# así el mismo archivo se despliega en la cuenta de cualquier integrante.
+service: nubeduca-ms-usuarios
+
+params:
+  default:
+    outbox: lambda
+    authMode: mock
+
+custom:
+  busName: ${param:busName, ssm:/nubeduca/${sls:stage}/bus-name, 'lms'}
+  relayEncendido:
+    lambda: true
+    pipe: false
+
+provider:
+  name: aws
+  runtime: python3.13
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  memorySize: 256
+  timeout: 20
+  iam:
+    role: arn:aws:iam::${aws:accountId}:role/LabRole   # Learner Lab no deja crear roles
+  environment:
+    SERVICIO: ms-usuarios
+    EVENT_SOURCE: lms.users
+    TABLA: ${sls:stage}-t_usuarios
+    EVENT_BUS: ${self:custom.busName}
+    AUTH_MODE: ${param:authMode}
+
+package:
+  patterns:
+    - '!tests/**'
+    - '!scripts/**'
+    - '!.venv/**'
+    - '!requirements-dev.txt'
+
+functions:
+  salud:
+    handler: api/salud.lambda_handler
+    events:
+      - http: { path: /health, method: get, cors: true }
+
+  # ACA-01. Con AUTH-01 listo, agrega a cada ruta:
+  #   authorizer: { type: COGNITO_USER_POOLS, arn: ${param:userPoolArn} }
+  tenant:
+    handler: api/tenant.lambda_handler
+    events:
+      - http: { path: /tenant, method: get, cors: true }
+
+  periodos:
+    handler: api/periodos.lambda_handler
+    events:
+      - http: { path: /terms, method: get, cors: true }
+      - http: { path: /terms, method: post, cors: true }
+      - http: { path: '/terms/{termId}/start', method: post, cors: true }
+
+  # Outbox -> bus (solo si outbox=lambda). Lee el Stream y publica los EVENTO#.
+  relayOutbox:
+    handler: relay/stream_a_bus.lambda_handler
+    events:
+      - stream:
+          type: dynamodb
+          arn: !GetAtt Tabla.StreamArn
+          enabled: ${self:custom.relayEncendido.${param:outbox}}
+          startingPosition: LATEST
+          batchSize: 10
+          maximumRetryAttempts: 10
+          filterPatterns:
+            - eventName: [INSERT]
+              dynamodb:
+                Keys:
+                  sk:
+                    S: [{ prefix: 'EVENTO#' }]
+
+# ms-usuarios no consume eventos (ningún consumers del catálogo lo nombra), así que no
+# tiene regla, cola ni DLQ de consumidor.
+
+resources:
+  Conditions:
+    UsarPipe: !Equals ['${param:outbox}', 'pipe']
+
+  Resources:
+    # Tabla única: PK tenant_id + sk. El Stream alimenta el outbox.
+    Tabla:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${sls:stage}-t_usuarios
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - { AttributeName: tenant_id, AttributeType: S }
+          - { AttributeName: sk, AttributeType: S }
+        KeySchema:
+          - { AttributeName: tenant_id, KeyType: HASH }
+          - { AttributeName: sk, KeyType: RANGE }
+        StreamSpecification:
+          StreamViewType: NEW_IMAGE
+        TimeToLiveSpecification:
+          AttributeName: ttl
+          Enabled: true
+
+    # Outbox con EventBridge Pipes (outbox=pipe). Falta confirmar que el LabRole lo permita.
+    PipeOutbox:
+      Type: AWS::Pipes::Pipe
+      Condition: UsarPipe
+      Properties:
+        Name: ${self:service}-${sls:stage}-outbox
+        RoleArn: arn:aws:iam::${aws:accountId}:role/LabRole
+        Source: !GetAtt Tabla.StreamArn
+        SourceParameters:
+          DynamoDBStreamParameters:
+            StartingPosition: LATEST
+            BatchSize: 1
+            MaximumRetryAttempts: 10
+          FilterCriteria:
+            Filters:
+              - Pattern: '{"eventName":["INSERT"],"dynamodb":{"Keys":{"sk":{"S":[{"prefix":"EVENTO#"}]}}}}'
+        Target: arn:aws:events:${aws:region}:${aws:accountId}:event-bus/${self:custom.busName}
+        TargetParameters:
+          InputTemplate: '<$.dynamodb.NewImage.detail.S>'
+          EventBridgeEventBusParameters:
+            Source: '$.dynamodb.NewImage.source.S'
+            DetailType: '$.dynamodb.NewImage.detailType.S'
+
+    # URL de la API para el frontend (infra/frontend de nubeduca-backend la lee de aquí).
+    ApiUrlParam:
+      Type: AWS::SSM::Parameter
+      Properties:
+        Name: /nubeduca/${sls:stage}/api/usuarios/url
+        Type: String
+        Value: !Join ['', ['https://', !Ref ApiGatewayRestApi, '.execute-api.${aws:region}.amazonaws.com/${sls:stage}']]
+
+  Outputs:
+    TablaNombre:
+      Value: !Ref Tabla
+    ApiUrl:
+      Value: !Join ['', ['https://', !Ref ApiGatewayRestApi, '.execute-api.${aws:region}.amazonaws.com/${sls:stage}']]

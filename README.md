@@ -85,7 +85,11 @@ Las pruebas usan moto (sin AWS). Cubren permisos por rol, aislamiento por tenant
 
 ## Desplegar
 
-Con las credenciales de la cuenta cargadas (en `nubeduca-backend`: `source scripts/cuenta.sh && cargar_cuenta`):
+En la cuenta de integración (D2) se despliega junto con todo lo demás desde la VM `nubeduca-despliegue`: `scripts/desplegar.sh staging --con-seed` de [`nubeduca-backend`](https://github.com/nubeduca/nubeduca-backend), o solo este servicio con `--solo usuarios`.
+
+**Observabilidad (PLT-06):** X-Ray en API Gateway y Lambda (ms-usuarios no consume eventos, así que no tiene DLQ).
+
+Para desplegarlo a mano en tu propia cuenta, con las credenciales cargadas (en `nubeduca-backend`: `source scripts/cuenta.sh && cargar_cuenta`):
 
 ```bash
 serverless deploy --stage dev

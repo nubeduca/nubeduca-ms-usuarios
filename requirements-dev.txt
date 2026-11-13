@@ -1,0 +1,3 @@
+-r requirements.txt
+pytest>=8
+moto[dynamodb,dynamodbstreams,events,sqs]>=5

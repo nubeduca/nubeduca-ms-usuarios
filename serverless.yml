@@ -65,6 +65,16 @@ functions:
       - http: { path: /terms, method: post, cors: true }
       - http: { path: '/terms/{termId}/start', method: post, cors: true }
 
+  # ACA-02: perfiles. POST /users/me crea el perfil en el primer login y publica user.provisioned.
+  usuarios:
+    handler: api/usuarios.lambda_handler
+    events:
+      - http: { path: /users/me, method: post, cors: true }
+      - http: { path: /users/me, method: get, cors: true }
+      - http: { path: /users/me, method: patch, cors: true }
+      - http: { path: /users, method: get, cors: true }
+      - http: { path: '/users/{userId}', method: get, cors: true }
+
   # Outbox -> bus (solo si outbox=lambda). Lee el Stream y publica los EVENTO#.
   relayOutbox:
     handler: relay/stream_a_bus.lambda_handler

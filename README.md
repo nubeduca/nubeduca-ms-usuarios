@@ -5,9 +5,9 @@ Microservicio de **tenants, periodos académicos y perfiles** de Nubeduca. Se cr
 | Tarea | Responsable | Estado |
 |---|---|---|
 | ACA-01 · Tenant y Organización | Dev 3 @btoroled | Tenants, periodos y eventos `tenant.created` y `term.started` |
-| ACA-02 · Usuarios y Perfiles | Dev 4 @Edinson695 | Pendiente (`/users/me`, `/users`, seed de 30.000 perfiles) |
+| ACA-02 · Usuarios y Perfiles | Dev 4 @Edinson695, Dev 6 @Guillermo-Heredia | Perfiles (`/users/me`, `/users`), `user.provisioned` al primer login y seed de 30.000 perfiles |
 
-## API (ACA-01)
+## API (ACA-01 y ACA-02)
 
 El tenant sale siempre del token (`custom:tenant_id`, o `Bearer mock.<tenant>.<ROL>.<userId>` en modo mock), nunca de la ruta ni del body.
 
@@ -18,6 +18,13 @@ El tenant sale siempre del token (`custom:tenant_id`, o `Bearer mock.<tenant>.<R
 | `GET /terms?limit=&nextToken=` | STUDENT, TEACHER, ADMIN | Periodos, el más reciente primero, paginados | |
 | `POST /terms` | ADMIN | Crea un periodo en `PLANNED`. 409 si el nombre ya existe en el tenant | |
 | `POST /terms/{termId}/start` | ADMIN | `PLANNED` → `ACTIVE`. 409 si no está en `PLANNED` | `lms.users.term.started.v1` |
+| `POST /users/me` | STUDENT, TEACHER, ADMIN | Crea mi perfil en el primer login (201) o lo devuelve si ya existía (200, sin evento). El frontend lo llama justo después del login | `lms.users.user.provisioned.v1` (solo en el 201) |
+| `GET /users/me` | STUDENT, TEACHER, ADMIN | Mi perfil. 404 `USUARIO_NO_ENCONTRADO` si nunca entré | |
+| `PATCH /users/me` | STUDENT, TEACHER, ADMIN | Solo `locale` (`es-PE`) y `timeZone` | |
+| `GET /users?role=&institutionalCode=&limit=&nextToken=` | TEACHER, ADMIN | Usuarios del tenant. Con `institutionalCode` busca ese código | |
+| `GET /users/{userId}` | TEACHER, ADMIN | Un usuario. 404 si no existe o es de otro tenant | |
+
+**Perfil del primer login:** el tenant, el rol y el `userId` salen del token. El correo y el nombre salen de los claims de Cognito (`email`, `given_name`, `family_name`). Lo que falte, y el código institucional, sale del padrón `ROSTER#<email>`, y si tampoco está ahí, de la parte del correo antes de la `@`. En modo mock el token no trae correo y se usa `<userId>@<tenant>.demo`.
 
 Los errores tienen la forma `{code, message, requestId}`: `NO_AUTENTICADO`, `SIN_PERMISO`, `DATOS_INVALIDOS`, `TENANT_NO_ENCONTRADO`, `PERIODO_NO_ENCONTRADO`, `PERIODO_DUPLICADO` y `PERIODO_NO_PLANIFICADO`.
 
@@ -27,6 +34,7 @@ Los errores tienen la forma `{code, message, requestId}`: `NO_AUTENTICADO`, `SIN
 |---|---|---|
 | `lms.users.tenant.created.v1` | `scripts/poblar_datos.py` crea un tenant (una vez por tenant) | ninguno todavía |
 | `lms.users.term.started.v1` | `POST /terms/{termId}/start` | ms-cursos |
+| `lms.users.user.provisioned.v1` | `POST /users/me` la primera vez (y `poblar_datos.py --eventos-demo` para los usuarios demo) | ms-cursos (código → userId para el CSV), ms-notificaciones (preferencias por defecto) |
 
 Todos salen por **outbox**: el cambio y el ítem `EVENTO#<eventId>` van en la misma `TransactWriteItems`, y antes se validan contra su JSON Schema de `nubeduca-contratos` (`contratos/esquemas/`). Si el evento no cumple el contrato, no se guarda nada. ms-usuarios no consume eventos.
 
@@ -39,6 +47,9 @@ PK `tenant_id` (HASH) + `sk` (RANGE), `PAY_PER_REQUEST`, Stream `NEW_IMAGE` y TT
 | `TENANT` | Institución | ver abajo |
 | `TERM#<termId>` | Periodo académico | ver abajo |
 | `TERMNAME#<name>` | Reserva del nombre del periodo en el tenant | `{"tenant_id": "utec", "sk": "TERMNAME#2026-2", "entidad": "TERMNAME", "termId": "trm_01JC..."}` |
+| `USER#<userId>` | Perfil | ver abajo |
+| `USERCODE#<código>` | Código institucional → usuario (único en el tenant) | `{"tenant_id": "utec", "sk": "USERCODE#202310457", "entidad": "USERCODE", "userId": "11111111-1111-4111-8111-111111111111"}` |
+| `ROSTER#<email>` | Padrón: lo que la institución ya sabe de ese correo, para el primer login | ver abajo |
 | `EVENTO#<eventId>` | Outbox (lo lee el Stream) | `source`, `detailType`, `detail`, `ttl` 7 días |
 
 ```json
@@ -72,7 +83,52 @@ PK `tenant_id` (HASH) + `sk` (RANGE), `PAY_PER_REQUEST`, Stream `NEW_IMAGE` y TT
 }
 ```
 
+```json
+{
+  "tenant_id": "utec",
+  "sk": "USER#11111111-1111-4111-8111-111111111111",
+  "entidad": "USER",
+  "userId": "11111111-1111-4111-8111-111111111111",
+  "role": "STUDENT",
+  "institutionalCode": "202310457",
+  "givenName": "Ana",
+  "familyName": "Torres",
+  "email": "alumno.demo@utec.edu.pe",
+  "locale": "es-PE",
+  "timeZone": "America/Lima",
+  "version": 1,
+  "createdAt": "2026-11-10T15:00:00Z"
+}
+```
+
+```json
+{
+  "tenant_id": "utec",
+  "sk": "ROSTER#alumno.demo@utec.edu.pe",
+  "entidad": "ROSTER",
+  "institutionalCode": "202310457",
+  "givenName": "Ana",
+  "familyName": "Torres",
+  "locale": "es-PE",
+  "timeZone": "America/Lima"
+}
+```
+
 `termId` es un ULID, así que ordenar por `sk` de forma descendente da el periodo creado más recientemente primero.
+
+## Seed: 30.000 perfiles
+
+```bash
+python scripts/poblar_datos.py --stage dev                    # UTEC 15.000, UPC 10.000, PUCP 5.000
+python scripts/poblar_datos.py --stage dev --escala 0.01      # 1 % para probar
+python scripts/poblar_datos.py --stage dev --eventos-demo     # + user.provisioned de los 21 usuarios demo
+```
+
+- Crea los 3 tenants (con `tenant.created`, una sola vez).
+- 90 % alumnos, 9 % docentes y 1 % admins, con ids fijos (uuid5): correrlo otra vez no duplica. Los perfiles **no** escriben `EVENTO#`.
+- Incluye los 21 usuarios demo del frontend (mismos ids, nombres, correos y códigos: Ana Torres `202310457`, `DOC-UTEC-001`, etc.) con su `ROSTER#`.
+- Deja el periodo `trm_0000000000000000000000SEED` como `ACTIVE`, el mismo que carga el seed de ms-cursos, para crear cursos sin iniciar un periodo.
+- `--eventos-demo` publica `user.provisioned` solo para los usuarios demo, así ms-cursos y ms-notificaciones los conocen.
 
 ## Probar
 

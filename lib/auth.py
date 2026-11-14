@@ -17,6 +17,10 @@ class Usuario:
     tenant_id: str
     user_id: str
     rol: str
+    # Solo con Cognito (claims del ID token). En modo mock el token no los trae.
+    email: str | None = None
+    given_name: str | None = None
+    family_name: str | None = None
 
 
 def _valido(tenant_id, user_id, rol) -> bool:
@@ -25,6 +29,7 @@ def _valido(tenant_id, user_id, rol) -> bool:
 
 def usuario(event: dict) -> Usuario | None:
     event = event or {}
+    extras = {}
     if config.auth_mode() == "mock":
         headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
         valor = headers.get("authorization", "")
@@ -39,4 +44,6 @@ def usuario(event: dict) -> Usuario | None:
         tenant_id = claims.get("custom:tenant_id")
         rol = claims.get("custom:role")
         user_id = claims.get("sub")
-    return Usuario(tenant_id, user_id, rol) if _valido(tenant_id, user_id, rol) else None
+        extras = {"email": claims.get("email"), "given_name": claims.get("given_name"),
+                  "family_name": claims.get("family_name")}
+    return Usuario(tenant_id, user_id, rol, **extras) if _valido(tenant_id, user_id, rol) else None

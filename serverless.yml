@@ -31,6 +31,10 @@ provider:
   timeout: 20
   iam:
     role: arn:aws:iam::${aws:accountId}:role/LabRole   # Learner Lab no deja crear roles
+  # PLT-06: trazas de API Gateway y Lambda en X-Ray.
+  tracing:
+    apiGateway: true
+    lambda: true
   environment:
     SERVICIO: ms-usuarios
     EVENT_SOURCE: lms.users

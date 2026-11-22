@@ -4,7 +4,7 @@
 # Parámetros (serverless deploy --stage dev --param="outbox=pipe"):
 #   busName   bus de EventBridge. Si no se pasa, se lee del SSM /nubeduca/<stage>/bus-name
 #             (lms-<stage>, de infra/base); si no existe, usa 'lms'.
-#   outbox    lambda (por defecto) | pipe. Cómo viaja el outbox del Stream al bus.
+#   outbox    pipe (por defecto, ADR-008) | lambda (vuelta atrás). Cómo viaja el outbox del Stream al bus.
 #   authMode  mock (por defecto, hasta AUTH-01) | cognito.
 #
 # Sin `org:` fija: Serverless v4 toma la org de SERVERLESS_ACCESS_KEY (o de `serverless login`),
@@ -13,7 +13,7 @@ service: nubeduca-ms-usuarios
 
 params:
   default:
-    outbox: lambda
+    outbox: pipe
     authMode: mock
 
 custom:
@@ -123,7 +123,7 @@ resources:
           AttributeName: ttl
           Enabled: true
 
-    # Outbox con EventBridge Pipes (outbox=pipe). Falta confirmar que el LabRole lo permita.
+    # Outbox con EventBridge Pipes (por defecto, ADR-008). Verificado con LabRole en dev y staging.
     PipeOutbox:
       Type: AWS::Pipes::Pipe
       Condition: UsarPipe

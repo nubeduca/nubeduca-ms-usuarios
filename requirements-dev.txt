@@ -1,3 +1,6 @@
 -r requirements.txt
 pytest>=8
 moto[dynamodb,dynamodbstreams,events,sqs]>=5
+# moto 5.2.5 responde "Not yet implemented" a DescribeStream con boto3/botocore 1.44.4.
+boto3<1.44.4
+botocore<1.44.4

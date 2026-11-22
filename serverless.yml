@@ -18,6 +18,14 @@ params:
 
 custom:
   busName: ${param:busName, ssm:/nubeduca/${sls:stage}/bus-name, 'lms'}
+  # REL-02: authorizer de Cognito en las rutas, solo con authMode=cognito. Con mock no hay authorizer
+  # (API Gateway rechazaría los tokens mock) y lib/auth.py lee el token del header.
+  # El User Pool sale de infra/auth (stack nubeduca-infra-auth-<stage>) o de --param="userPoolArn=...".
+  userPoolArn: ${param:userPoolArn, cf:nubeduca-infra-auth-${sls:stage}.UserPoolArn, ''}
+  autorizador:
+    cognito:
+      type: COGNITO_USER_POOLS
+      arn: ${self:custom.userPoolArn}
   relayEncendido:
     lambda: true
     pipe: false
@@ -60,24 +68,24 @@ functions:
   tenant:
     handler: api/tenant.lambda_handler
     events:
-      - http: { path: /tenant, method: get, cors: true }
+      - http: { path: /tenant, method: get, cors: true, authorizer: '${self:custom.autorizador.${param:authMode}, null}' }
 
   periodos:
     handler: api/periodos.lambda_handler
     events:
-      - http: { path: /terms, method: get, cors: true }
-      - http: { path: /terms, method: post, cors: true }
-      - http: { path: '/terms/{termId}/start', method: post, cors: true }
+      - http: { path: /terms, method: get, cors: true, authorizer: '${self:custom.autorizador.${param:authMode}, null}' }
+      - http: { path: /terms, method: post, cors: true, authorizer: '${self:custom.autorizador.${param:authMode}, null}' }
+      - http: { path: '/terms/{termId}/start', method: post, cors: true, authorizer: '${self:custom.autorizador.${param:authMode}, null}' }
 
   # ACA-02: perfiles. POST /users/me crea el perfil en el primer login y publica user.provisioned.
   usuarios:
     handler: api/usuarios.lambda_handler
     events:
-      - http: { path: /users/me, method: post, cors: true }
-      - http: { path: /users/me, method: get, cors: true }
-      - http: { path: /users/me, method: patch, cors: true }
-      - http: { path: /users, method: get, cors: true }
-      - http: { path: '/users/{userId}', method: get, cors: true }
+      - http: { path: /users/me, method: post, cors: true, authorizer: '${self:custom.autorizador.${param:authMode}, null}' }
+      - http: { path: /users/me, method: get, cors: true, authorizer: '${self:custom.autorizador.${param:authMode}, null}' }
+      - http: { path: /users/me, method: patch, cors: true, authorizer: '${self:custom.autorizador.${param:authMode}, null}' }
+      - http: { path: /users, method: get, cors: true, authorizer: '${self:custom.autorizador.${param:authMode}, null}' }
+      - http: { path: '/users/{userId}', method: get, cors: true, authorizer: '${self:custom.autorizador.${param:authMode}, null}' }
 
   # Outbox -> bus (solo si outbox=lambda). Lee el Stream y publica los EVENTO#.
   relayOutbox:
@@ -105,6 +113,25 @@ resources:
     UsarPipe: !Equals ['${param:outbox}', 'pipe']
 
   Resources:
+    # REL-02: los errores de API Gateway (p.ej. 401 del authorizer) también llevan CORS.
+    RespuestaGateway4XX:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        RestApiId: !Ref ApiGatewayRestApi
+        ResponseType: DEFAULT_4XX
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Authorization,Content-Type'"
+
+    RespuestaGateway5XX:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        RestApiId: !Ref ApiGatewayRestApi
+        ResponseType: DEFAULT_5XX
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Authorization,Content-Type'"
+
     # Tabla única: PK tenant_id + sk. El Stream alimenta el outbox.
     Tabla:
       Type: AWS::DynamoDB::Table
